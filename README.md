@@ -79,4 +79,4 @@ support AMDTI?
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/jesperrojestal/librato_stats.
+Bug reports and pull requests are welcome on GitHub at https://github.com/jesperrojestal/librato_stats_gpu.
