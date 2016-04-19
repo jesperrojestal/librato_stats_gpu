@@ -88,11 +88,12 @@ module LibratoStats
           raw_key = @csv_data.headers.grep(/^#{label}/).first
           key = raw_key.downcase
           key = key.tr(' ', '.')
+          key = key.gsub('%', 'percent')
           key = key.gsub(/[^a-zA-Z0-9.\-]/, '')
 
           submit_data.merge!(
             "gauges[#{gauge_index}][source]" => "#{Socket.gethostname}.#{data['pci.bus_id']}",
-            "gauges[#{gauge_index}][name]"   => "gpu.stats.#{key}",
+            "gauges[#{gauge_index}][name]"   => "gpu.#{key}",
             "gauges[#{gauge_index}][value]"  => data[raw_key].to_s
           )
           gauge_index += 1
