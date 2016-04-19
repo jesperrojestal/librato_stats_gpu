@@ -4,9 +4,9 @@ Small gem to find nvidia-smi in path and parse the csv output for GPU stats and 
 
 ## Installation ##
 
-Fork this repo from github and install the gem with:
+Fork this repo from github and build the gem with:
 ```shellsession
-gem build
+gem build librato_stats_gpu.gemspec
 ```
 
 Then install the built gem with:
