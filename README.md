@@ -1,17 +1,17 @@
 # librato_stats_gpu #
 
-Small gem to find nvidia-smi in path and parse the csv output for GPU stats and push those stats into librato.
+Small gem to find nvidia-smi in path and parse the csv output for GPU stats and push those stats into librato. All using ruby std-lib, i.e without any ruby dependencies.
 
 ## Installation ##
 
 Fork this repo from github and build the gem with:
 ```shellsession
-gem build librato_stats_gpu.gemspec
+$ gem build librato_stats_gpu.gemspec
 ```
 
 Then install the built gem with:
 ```shellsession
-gem install librato_stats_gpu-<version>.gem
+$ gem install librato_stats_gpu-<version>.gem
 ```
 
 ## Usage ##
@@ -20,9 +20,9 @@ As root execute the following:
 ```shellsession
 # librato_stats_gpu
 ```
-it will default configuration to librato_stats_gpu.yml
+it will default configuration to `librato_stats_gpu.yml`
 
-else run the following for alternative names:
+else run the following for alternative configuration names and paths:
 
 ```shellsession
 # librato_stats_gpu [path_to_configuration_filename.yml]
@@ -32,15 +32,14 @@ Then setup crontab to run it at desired interval
 
 ## Configuration ##
 
-Create a file named librato_stats_gpu.yml in the current cwd with the following content
-
+Create a file named `librato_stats_gpu.yml` in the current cwd with the following content
 ```yaml
 url: https://metrics-api.librato.com/v1/metrics
 username: username@example.com
 api_token: xxxx_LIBRATO_API_TOKEN_HERE_xxxx
 ```
 
-Or you can add 'fields' array to specify your own metrics. see 'nvidia-smi --help-query-gpu' for available
+Or you can add `fields` array to override the default metrics. see `nvidia-smi --help-query-gpu` for available fields
 ```yaml
 url: https://metrics-api.librato.com/v1/metrics
 username: username@example.com
@@ -51,7 +50,7 @@ fields:
   - temperature.gpu
 ```
 
-default for fields is:
+default for `fields` is:
 
     pcie.link.gen.current
     pcie.link.gen.max
@@ -112,14 +111,21 @@ default for fields is:
     retired_pages.pending
 
 Some value mapping will occur for some values:
-'Not Active', 'Disabled' and 'No'  will be mapped to '0'
-'Active', 'Enabled' and 'Yes' will be mapped to '1'
+
+| String values from nvidia-smi   | Value |
+| :------------------------------ | ----: |
+| `Not Active`  `Disabled`  `No`  | 0     |
+| `Active`      `Enabled`   `Yes` | 1     |
+
+Also `[Not Supported]` returned from nvidia-smi will skip reporting that metric
 
 ## TODO ##
 
 ???
+
 rename GPU class to nvidia and inherit a GPU base class?
-support AMDTI?
+
+support AMD/ATI?
 
 ## Contributing
 
