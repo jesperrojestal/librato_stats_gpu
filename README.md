@@ -39,18 +39,18 @@ username: username@example.com
 api_token: xxxx_LIBRATO_API_TOKEN_HERE_xxxx
 ```
 
-Or you can add `fields` array to override the default metrics. see `nvidia-smi --help-query-gpu` for available fields
+Or you can add `csv_fields` array to override the default metrics. see `nvidia-smi --help-query-gpu` for available fields
 ```yaml
 url: https://metrics-api.librato.com/v1/metrics
 username: username@example.com
 api_token: xxxx_LIBRATO_API_TOKEN_HERE_xxxx
-fields:
+csv_fields:
   - utilization.gpu
   - utilization.memory
   - temperature.gpu
 ```
 
-default for `fields` is:
+default for `csv_fields` is:
 
     pcie.link.gen.current
     pcie.link.gen.max
@@ -109,6 +109,18 @@ default for `fields` is:
     retired_pages.single_bit_ecc.count
     retired_pages.double_bit.count
     retired_pages.pending
+
+
+also you can get data from the xml-format. for some reason encoder and decoder
+utilization is not available in the csv output. You can override the xml-format
+ fields the same way as `csv_fields` just specify `xml_fields` in the yml file.
+
+Default values for `xml_fields` are:
+
+    utilization/encoder_util
+    utilization/decoder_util
+
+
 
 Some value mapping will occur for some values:
 

@@ -4,23 +4,26 @@ require 'socket'
 require 'net/http'
 require 'base64'
 require 'csv'
+require 'rexml/document'
 require 'English'
 
 module LibratoStats
   # collect and gather GPU data
   class GPU
-    attr_accessor :fields, :binary, :raw_data, :csv_data
+    class NextIteration < RuntimeError; end
+
+    attr_accessor :csv_fields, :xml_fields, :binary, :csv_data, :xml_data
 
     def initialize
       # setup some fields to get gpu stats from
-      @raw_data = nil
       @csv_data = nil
+      @xml_data = nil
 
       # settings that can be overwritten
       @uri       = nil
       @username  = nil
       @api_token = nil
-      @fields = [
+      @csv_fields = [
         'pcie.link.gen.current',
         'pcie.link.gen.max',
         'pcie.link.width.current',
@@ -80,11 +83,15 @@ module LibratoStats
         'retired_pages.pending'
       ]
 
+      @xml_fields = [
+        'utilization/encoder_util',
+        'utilization/decoder_util'
+      ]
+
       # find binary from PATH
       @bin = `/usr/bin/which nvidia-smi`.split("\n").first
       if $CHILD_STATUS.exitstatus > 0
-        puts 'error: nvidia-smi was not found in PATH'
-        exit 1
+        raise 'error: nvidia-smi was not found in PATH'
       end
 
       filename = File.realpath('librato_stats_gpu.yml')
@@ -92,28 +99,38 @@ module LibratoStats
 
       @settings = YAML.parse_file(filename).to_ruby
 
-      @username  = @settings['username']       if @settings['username']
-      @api_token = @settings['api_token']      if @settings['api_token']
-      @uri       = URI.parse(@settings['url']) if @settings['url']
-      @fields    = @settings['fields']         if @settings['fields']
+      @username   = @settings['username']       if @settings['username']
+      @api_token  = @settings['api_token']      if @settings['api_token']
+      @uri        = URI.parse(@settings['url']) if @settings['url']
+      @csv_fields = @settings['csv_fields']     if @settings['csv_fields']
+      @xml_fields = @settings['xml_fields']     if @settings['xml_fields']
 
       raise URI::Error, "'url' setting is not a valid HTTP/HTTPS URL from #{filename}" unless @uri.is_a?(URI::HTTP)
       raise "'username' setting is missing from #{filename}" if @username.nil?
       raise "'password' setting is missing from #{filename}" if @api_token.nil?
     rescue Errno::ENOENT => e
-      puts 'Settings yml file not found! (defaults to librato_stats_gpu.yml)'
-      puts e.message
-      exit 1
-    rescue URI::Error => e
-      puts "Invlid 'url' setting in yml!"
-      puts e.message
-      exit 1
+      raise e.class, "Settings yml file not found! (defaults to librato_stats_gpu.yml)\n#{e.message}"
+    end
+
+    def collect_csv_data
+      raw_csv_data = `#{@bin} --query-gpu=index,pci.bus_id,name,driver_version,#{@csv_fields.join(',')} --format=csv,nounits`
+      converter_strip_spaces = ->(f) { f.strip }
+      @csv_data = CSV.parse(
+        raw_csv_data,
+        headers: true,
+        header_converters: converter_strip_spaces,
+        converters: converter_strip_spaces
+      )
+    end
+
+    def collect_xml_data
+      raw_xml_data = `#{@bin} -q --xml-format`
+      @xml_data = REXML::Document.new(raw_xml_data, ignore_whitespace_nodes: :all).document.root.select { |node| node.name == 'gpu' }
     end
 
     def collect_data
-      @raw_data = `#{@bin} --query-gpu=index,pci.bus_id,name,driver_version,#{@fields.join(',')} --format=csv,nounits`
-      strip_spaces = ->(f) { f.strip }
-      @csv_data = CSV.parse(@raw_data, headers: true, converters: strip_spaces, header_converters: strip_spaces)
+      collect_csv_data
+      collect_xml_data
     end
 
     def submit_data
@@ -124,8 +141,9 @@ module LibratoStats
       }
 
       gauge_index = 0
+
       @csv_data.each do |data|
-        @fields.each do |label|
+        @csv_fields.each do |label|
           key = @csv_data.headers.grep(/^#{label}/).first
           name = sanitize_name(key)
 
@@ -134,20 +152,31 @@ module LibratoStats
             "gauges[#{gauge_index}][name]"   => "gpu.#{name}"
           }
 
-          values_hash["gauges[#{gauge_index}][value]"] = case data[key]
-          when '[Not Supported]'
-            next
-          when 'Not Active', 'Disabled', 'No'
-            '0'
-          when 'Active', 'Enabled', 'Yes'
-            '1'
-          else
-            data[key]
-          end
-          submit_data.merge!(values_hash)
+          next unless (values_hash["gauges[#{gauge_index}][value]"] = value_mapper(data[key]))
 
+          submit_data.merge!(values_hash)
           gauge_index += 1
         end
+      end
+
+      @xml_data.each do |gpu|
+        @xml_fields.each do |key|
+          name = sanitize_name(key)
+
+          values_hash = {
+            "gauges[#{gauge_index}][source]" => "#{Socket.gethostname}.#{gpu.elements['pci/pci_bus_id'].text}",
+            "gauges[#{gauge_index}][name]"   => "gpu.#{name}"
+          }
+
+          next unless (values_hash["gauges[#{gauge_index}][value]"] = value_mapper(gpu.elements[key].text))
+
+          submit_data.merge!(values_hash)
+          gauge_index += 1
+        end
+      end
+
+      submit_data.each do |k, v|
+        puts "#{k} => #{v}"
       end
 
       # http connection
@@ -166,18 +195,37 @@ module LibratoStats
       raise "Librato returned #{response.code} #{response.body}" unless response.is_a?(Net::HTTPSuccess)
     end
 
-    def sanitize_name(key)
-      name = key.downcase
-      name = name.tr(' ', '.')
-      name = name.gsub('%', 'percent')
-      name.gsub(/[^a-zA-Z0-9._\-]/, '')
-    end
-
     def self.collect
       obj = new
       obj.collect_data
       obj.submit_data
       obj
+    end
+
+    private
+
+    def sanitize_name(key)
+      name = key.downcase
+      name = name.tr(' /', '.')
+      name = name.gsub('%', 'percent')
+      name.gsub(/[^a-zA-Z0-9._\-]/, '')
+    end
+
+    def value_mapper(data)
+      case data
+      when '[Not Supported]'
+        nil
+      when 'Not Active', 'Disabled', 'No'
+        '0'
+      when 'Active', 'Enabled', 'Yes'
+        '1'
+      else
+        if data =~ /\d+[.,]\d+/
+          data.to_f
+        else
+          data.to_i
+        end
+      end
     end
   end
 end
