@@ -1,18 +1,21 @@
 require 'uri'
 require 'yaml'
 require 'socket'
-require 'net/http'
-require 'base64'
 require 'csv'
 require 'rexml/document'
+require 'json'
+require 'socket'
 require 'English'
+require 'librato/metrics'
 
 module LibratoStats
   # collect and gather GPU data
   class GPU
-    class NextIteration < RuntimeError; end
+    attr_accessor :csv_fields, :xml_fields, :binary, :csv_data, :xml_data, :queue
 
-    attr_accessor :csv_fields, :xml_fields, :binary, :csv_data, :xml_data
+    def self.collect_and_submit
+      new
+    end
 
     def initialize
       # setup some fields to get gpu stats from
@@ -101,19 +104,36 @@ module LibratoStats
 
       @username   = @settings['username']       if @settings['username']
       @api_token  = @settings['api_token']      if @settings['api_token']
-      @uri        = URI.parse(@settings['url']) if @settings['url']
       @csv_fields = @settings['csv_fields']     if @settings['csv_fields']
       @xml_fields = @settings['xml_fields']     if @settings['xml_fields']
 
-      raise URI::Error, "'url' setting is not a valid HTTP/HTTPS URL from #{filename}" unless @uri.is_a?(URI::HTTP)
       raise "'username' setting is missing from #{filename}" if @username.nil?
-      raise "'password' setting is missing from #{filename}" if @api_token.nil?
+      raise "'api_token' setting is missing from #{filename}" if @api_token.nil?
+
+      # librato stuff
+      Librato::Metrics.authenticate(@username, @api_token)
+      @queue = Librato::Metrics::Queue.new(
+        tags: {
+          hostname: Socket.gethostname
+        }
+      )
+
+      collect_csv_data
+      collect_xml_data
+
+      @queue.submit
     rescue Errno::ENOENT => e
       raise e.class, "Settings yml file not found! (defaults to librato_stats_gpu.yml)\n#{e.message}"
     end
 
     def collect_csv_data
-      raw_csv_data = `#{@bin} --query-gpu=index,pci.bus_id,name,driver_version,#{@csv_fields.join(',')} --format=csv,nounits`
+      start = Time.now.to_i
+
+      raw_csv_data = nil
+      @queue.time 'gpu.collect.csv' do
+        raw_csv_data = `#{@bin} --query-gpu=index,pci.bus_id,name,driver_version,#{@csv_fields.join(',')} --format=csv,nounits`
+      end
+
       converter_strip_spaces = ->(f) { f.strip }
       @csv_data = CSV.parse(
         raw_csv_data,
@@ -121,85 +141,52 @@ module LibratoStats
         header_converters: converter_strip_spaces,
         converters: converter_strip_spaces
       )
-    end
-
-    def collect_xml_data
-      raw_xml_data = `#{@bin} -q --xml-format`
-      @xml_data = REXML::Document.new(raw_xml_data, ignore_whitespace_nodes: :all).document.root.select { |node| node.name == 'gpu' }
-    end
-
-    def collect_data
-      collect_csv_data
-      collect_xml_data
-    end
-
-    def submit_data
-      timestamp = Time.now.to_i
-
-      submit_data = {
-        'measure_time' => timestamp
-      }
-
-      gauge_index = 0
 
       @csv_data.each do |data|
         @csv_fields.each do |label|
           key = @csv_data.headers.grep(/^#{label}/).first
-          name = sanitize_name(key)
+          name = "gpu.#{sanitize_name(key)}"
+          value = value_mapper(data[key])
 
-          values_hash = {
-            "gauges[#{gauge_index}][source]" => "#{Socket.gethostname}.#{data['pci.bus_id']}",
-            "gauges[#{gauge_index}][name]"   => "gpu.#{name}"
+          next unless value
+
+          @queue.add name => {
+            value: value,
+            measure_time: start,
+            tags: {
+              pci_card: "#{Socket.gethostname}.#{data['pci.bus_id']}"
+            }
           }
-
-          next unless (values_hash["gauges[#{gauge_index}][value]"] = value_mapper(data[key]))
-
-          submit_data.merge!(values_hash)
-          gauge_index += 1
         end
       end
+    end
+
+    def collect_xml_data
+      start = Time.now.to_i
+
+      raw_xml_data = nil
+      @queue.time 'gpu.collect.xml' do
+        raw_xml_data = `#{@bin} -q --xml-format`
+      end
+
+      @xml_data = REXML::Document.new(raw_xml_data, ignore_whitespace_nodes: :all).document.root.select { |node| node.name == 'gpu' }
 
       @xml_data.each do |gpu|
         @xml_fields.each do |key|
-          name = sanitize_name(key)
+          name = "gpu.#{sanitize_name(key)}"
+          value = value_mapper(gpu.elements[key].text)
 
-          values_hash = {
-            "gauges[#{gauge_index}][source]" => "#{Socket.gethostname}.#{gpu.elements['pci/pci_bus_id'].text}",
-            "gauges[#{gauge_index}][name]"   => "gpu.#{name}"
+          next unless value
+
+          @queue.add name => {
+            value: value,
+            measure_time: start,
+            tags: {
+              pci_card: "#{Socket.gethostname}.#{gpu.elements['pci/pci_bus_id'].text}"
+            }
           }
-
-          next unless (values_hash["gauges[#{gauge_index}][value]"] = value_mapper(gpu.elements[key].text))
-
-          submit_data.merge!(values_hash)
-          gauge_index += 1
         end
       end
-
-      submit_data.each do |k, v|
-        puts "#{k} => #{v}"
-      end
-
-      # http connection
-      http_connection = Net::HTTP.new(@uri.host, @uri.port)
-      http_connection.use_ssl = true
-      http_connection.verify_mode = OpenSSL::SSL::VERIFY_PEER
-
-      # request and authentication
-      request = Net::HTTP::Post.new(@uri.request_uri)
-      request.basic_auth(@username, @api_token)
-      request.set_form_data(submit_data)
-
-      # get request response from server via http_connection
-      response = http_connection.request(request)
-
-      raise "Librato returned #{response.code} #{response.body}" unless response.is_a?(Net::HTTPSuccess)
-    end
-
-    def self.collect
-      obj = new
-      obj.collect_data
-      obj.submit_data
-      obj
     end
 
     private
@@ -216,9 +203,9 @@ module LibratoStats
       when '[Not Supported]'
         nil
       when 'Not Active', 'Disabled', 'No'
-        '0'
+        0
       when 'Active', 'Enabled', 'Yes'
-        '1'
+        1
       else
         if data =~ /\d+[.,]\d+/
           data.to_f

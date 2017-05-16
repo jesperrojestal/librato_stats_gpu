@@ -14,6 +14,24 @@ AllCops:
   # -E/--extra-details option.
   ExtraDetails: true
 
+  # What MRI version of the Ruby interpreter is the inspected code intended to
+  # run on? (If there is more than one, set this to the lowest version.)
+  # If a value is specified for TargetRubyVersion then it is used.
+  # Else if .ruby-version exists and it contains an MRI version it is used.
+  # Otherwise we fallback to the oldest officially supported Ruby version (2.1).
+  TargetRubyVersion: 1.9
+
+Style/Documentation:
+  Enabled: false
+
+Style/CaseIndentation:
+  # Valid values are: case, end
+  EnforcedStyle: end
+  IndentOneStep: false
+
+Lint/EndAlignment:
+  EnforcedStyleAlignWith: keyword
+
 Metrics/LineLength:
   Enabled: false
 
@@ -37,12 +55,3 @@ Metrics/PerceivedComplexity:
 
 Metrics/BlockNesting:
   Max: 4
-
-Style/CaseIndentation:
-  # Valid values are: case, end
-  IndentWhenRelativeTo: end
-  IndentOneStep: false
-
-Lint/EndAlignment:
-  AlignWith: variable
-

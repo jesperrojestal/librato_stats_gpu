@@ -34,14 +34,12 @@ Then setup crontab to run it at desired interval
 
 Create a file named `librato_stats_gpu.yml` in the current cwd with the following content
 ```yaml
-url: https://metrics-api.librato.com/v1/metrics
 username: username@example.com
 api_token: xxxx_LIBRATO_API_TOKEN_HERE_xxxx
 ```
 
 Or you can add `csv_fields` array to override the default metrics. see `nvidia-smi --help-query-gpu` for available fields
 ```yaml
-url: https://metrics-api.librato.com/v1/metrics
 username: username@example.com
 api_token: xxxx_LIBRATO_API_TOKEN_HERE_xxxx
 csv_fields:
