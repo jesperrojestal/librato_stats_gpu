@@ -21,6 +21,7 @@ module LibratoStats
       # setup some fields to get gpu stats from
       @csv_data = nil
       @xml_data = nil
+      @ip = Socket.gethostname
 
       # settings that can be overwritten
       @uri       = nil
@@ -110,11 +111,20 @@ module LibratoStats
       raise "'username' setting is missing from #{filename}" if @username.nil?
       raise "'api_token' setting is missing from #{filename}" if @api_token.nil?
 
+      addr_list = Socket.ip_address_list.select(&:ipv4?).reject(&:ipv4_loopback?)
+      @ip = if addr_list.reject(&:ipv4_private?).any?
+              addr_list.reject(&:ipv4_private?).first.ip_address
+            elsif addr_list.select(&:ipv4_private?).any?
+              addr_list.select(&:ipv4_private?).first.ip_address
+            end
+
       # librato stuff
       Librato::Metrics.authenticate(@username, @api_token)
       @queue = Librato::Metrics::Queue.new(
+        prefix: 'gpu',
+        measure_time: Time.now.to_i,
         tags: {
-          hostname: Socket.gethostname
+          ip: @ip
         }
       )
 
@@ -127,10 +137,8 @@ module LibratoStats
     end
 
     def collect_csv_data
-      start = Time.now.to_i
-
       raw_csv_data = nil
-      @queue.time 'gpu.collect.csv' do
+      @queue.time 'collect.csv' do
         raw_csv_data = `#{@bin} --query-gpu=index,pci.bus_id,name,driver_version,#{@csv_fields.join(',')} --format=csv,nounits`
       end
 
@@ -145,16 +153,18 @@ module LibratoStats
       @csv_data.each do |data|
         @csv_fields.each do |label|
           key = @csv_data.headers.grep(/^#{label}/).first
-          name = "gpu.#{sanitize_name(key)}"
+          name = sanitize_name(key)
           value = value_mapper(data[key])
 
           next unless value
 
           @queue.add name => {
             value: value,
-            measure_time: start,
             tags: {
-              pci_card: "#{Socket.gethostname}.#{data['pci.bus_id']}"
+              ip:             @ip,
+              pci_address:    data['pci.bus_id'],
+              product_name:   data['name'],
+              driver_version: data['driver_version']
             }
           }
         end
@@ -162,27 +172,27 @@ module LibratoStats
     end
 
     def collect_xml_data
-      start = Time.now.to_i
-
       raw_xml_data = nil
-      @queue.time 'gpu.collect.xml' do
+      @queue.time 'collect.xml' do
         raw_xml_data = `#{@bin} -q --xml-format`
       end
 
-      @xml_data = REXML::Document.new(raw_xml_data, ignore_whitespace_nodes: :all).document.root.select { |node| node.name == 'gpu' }
+      @xml_data = REXML::Document.new(raw_xml_data, ignore_whitespace_nodes: :all).document.root
 
-      @xml_data.each do |gpu|
+      @xml_data.select { |node| node.name == 'gpu' }.each do |gpu|
         @xml_fields.each do |key|
-          name = "gpu.#{sanitize_name(key)}"
+          name = sanitize_name(key)
           value = value_mapper(gpu.elements[key].text)
 
           next unless value
 
           @queue.add name => {
             value: value,
-            measure_time: start,
             tags: {
-              pci_card: "#{Socket.gethostname}.#{gpu.elements['pci/pci_bus_id'].text}"
+              ip:             @ip,
+              pci_address:    gpu.elements['pci/pci_bus_id'].text,
+              product_name:   gpu.elements['product_name'].text,
+              driver_version: @xml_data.elements['driver_version'].text
             }
           }
         end
@@ -200,7 +210,7 @@ module LibratoStats
 
     def value_mapper(data)
       case data
-      when '[Not Supported]'
+      when '[Not Supported]', 'N/A'
         nil
       when 'Not Active', 'Disabled', 'No'
         0
